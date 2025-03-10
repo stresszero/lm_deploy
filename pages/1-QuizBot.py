@@ -38,48 +38,63 @@ def get_wikipedia_url(keyword):
 
 
 # 퀴즈 생성 함수
-@st.spinner("퀴즈 생성중...")
 def generate_quiz(
     docs, model_name, quiz_lang, quiz_count, quiz_type, quiz_difficulty, is_file=False
 ):
-    client.beta.assistants.update(assistant_id=quiz_bot.id, model=model_name)
-    if is_file:
-        vector_store = client.beta.vector_stores.retrieve(
-            vector_store_id=QUIZBOT_VECTOR_STORE_ID
-        )
-        file_batch = client.beta.vector_stores.file_batches.upload_and_poll(
-            vector_store_id=vector_store.id, files=[open(file_path, "rb")]
-        )
+    with st.spinner("퀴즈 생성중..."):
+        client.beta.assistants.update(assistant_id=quiz_bot.id, model=model_name)
+        if is_file:
+            vector_store = client.beta.vector_stores.retrieve(
+                vector_store_id=QUIZBOT_VECTOR_STORE_ID
+            )
+            file_batch = client.beta.vector_stores.file_batches.upload_and_poll(
+                vector_store_id=vector_store.id, files=[open(file_path, "rb")]
+            )
 
-    thread = client.beta.threads.create(
-        messages=[
-            {
-                "role": "user",
-                "content": f"""
-                컨텍스트: {docs}
-                퀴즈 언어: {quiz_lang}
-                퀴즈 개수: {quiz_count}
-                퀴즈 유형: {quiz_type}
-                퀴즈 난이도: {quiz_difficulty}
-                """,
-            }
-        ]
-    )
-    run = client.beta.threads.runs.create_and_poll(
-        thread_id=thread.id, assistant_id=quiz_bot.id
-    )
-    messages = list(
-        client.beta.threads.messages.list(thread_id=thread.id, run_id=run.id)
-    )
-
-    message_content = (
-        messages[0]
-        .content[0]
-        .text.value.replace("\n", "")
-        .replace("```", "")
-        .replace("json", "")
-    )
-    return json.loads(message_content)
+        thread = client.beta.threads.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""
+                    컨텍스트: {docs}
+                    퀴즈 언어: {quiz_lang}
+                    퀴즈 개수: {quiz_count}
+                    퀴즈 유형: {quiz_type}
+                    퀴즈 난이도: {quiz_difficulty}
+                    """,
+                }
+            ]
+        )
+        run = client.beta.threads.runs.create_and_poll(
+            thread_id=thread.id, assistant_id=quiz_bot.id
+        )
+        messages = list(
+            client.beta.threads.messages.list(thread_id=thread.id, order="desc")
+        )
+        
+        # Check if messages list is empty
+        if not messages:
+            st.error("퀴즈 생성에 실패했습니다. 다시 시도해 주세요.")
+            return {"questions": []}
+            
+        # Safely access the message content
+        try:
+            message_content = messages[0].content[0].text.value
+            # Clean up the content
+            message_content = message_content.replace("\n", "")
+            # Check if the content appears to be JSON
+            if "{" in message_content and "}" in message_content:
+                # Try to extract just the JSON part
+                json_start = message_content.find("{")
+                json_end = message_content.rfind("}") + 1
+                json_content = message_content[json_start:json_end]
+                return json.loads(json_content)
+            else:
+                st.error("응답 형식이 올바르지 않습니다. 다시 시도해 주세요.")
+                return {"questions": []}
+        except (IndexError, AttributeError, json.JSONDecodeError) as e:
+            st.error(f"퀴즈 데이터 처리 중 오류가 발생했습니다: {str(e)}")
+            return {"questions": []}
 
 
 def send_all_quiz_data(subjects):
@@ -95,18 +110,18 @@ def send_all_quiz_data(subjects):
 
 
 # 틀린 문제와 주제 전송 함수
-@st.spinner("풀이 결과 전송중...")
 def send_incorrect_quiz_data(questions, subjects):
-    message = client.beta.threads.messages.create(
-        thread_id=LM_THREAD_ID,
-        role="user",
-        content=f"""
-        다음은 방금 풀어본 퀴즈에서 틀린 문제들 입니다. 잘 기억해두세요.
-        틀린 문제: {"\n".join(questions)}
-        틀린 문제의 키워드: {", ".join(subjects)}
-        """,
-    )
-    # print("틀린 문제와 주제 전송 완료")
+    with st.spinner("풀이 결과 전송중..."):
+        message = client.beta.threads.messages.create(
+            thread_id=LM_THREAD_ID,
+            role="user",
+            content=f"""
+            다음은 방금 풀어본 퀴즈에서 틀린 문제들 입니다. 잘 기억해두세요.
+            틀린 문제: {"\n".join(questions)}
+            틀린 문제의 키워드: {", ".join(subjects)}
+            """,
+        )
+        # print("틀린 문제와 주제 전송 완료")
 
 
 # 사이드바: 퀴즈 설정
@@ -142,6 +157,8 @@ with st.sidebar:
         if upload_file:
             file_name = upload_file.name
             file_content = upload_file.read()
+            # Make sure the directory exists
+            os.makedirs("./.cache/quiz_files", exist_ok=True)
             file_path = f"./.cache/quiz_files/{file_name}"
             with open(file_path, "wb") as f:
                 f.write(file_content)
@@ -161,68 +178,77 @@ if not file_path and not docs:
         "#### 안녕하세요 QuizBot입니다. 퀴즈를 생성하려면 문서 파일을 업로드하거나 키워드를 입력하세요."
     )
 elif file_path or docs:
-    if not st.session_state["quiz_data"]:
-        response = generate_quiz(
-            docs if docs else file_path,
-            model_name,
-            quiz_lang,
-            quiz_count,
-            quiz_type,
-            quiz_difficulty,
-            is_file=bool(file_path),
-        )
-        st.session_state["quiz_data"] = response["questions"]
+    # Generate quiz button for better control
+    if st.button("퀴즈 생성하기") or st.session_state["quiz_data"]:
+        if not st.session_state["quiz_data"]:
+            response = generate_quiz(
+                docs if docs else file_path,
+                model_name,
+                quiz_lang,
+                quiz_count,
+                quiz_type,
+                quiz_difficulty,
+                is_file=bool(file_path),
+            )
+            st.session_state["quiz_data"] = response.get("questions", [])
 
-    if st.session_state["quiz_data"]:
-        wrong_questions = []
-        wrong_subjects = set()
-        quiz_subjects = set()
-        for question in st.session_state["quiz_data"]:
-            quiz_subjects.update(question["subjects"])
-        send_all_quiz_data(quiz_subjects)
+        if st.session_state["quiz_data"]:
+            wrong_questions = []
+            wrong_subjects = set()
+            quiz_subjects = set()
+            
+            # Check if quiz data has valid format
+            if all(isinstance(q, dict) and "subjects" in q for q in st.session_state["quiz_data"]):
+                for question in st.session_state["quiz_data"]:
+                    quiz_subjects.update(question["subjects"])
+                
+                if quiz_subjects:
+                    send_all_quiz_data(quiz_subjects)
 
-        with st.form("questions_form"):
-            for idx, question in enumerate(st.session_state["quiz_data"]):
-                st.write(question["question"])
-                correct_answer = question["correct_answer"]
+                with st.form("questions_form"):
+                    for idx, question in enumerate(st.session_state["quiz_data"]):
+                        st.write(f"**질문 {idx+1}:** {question['question']}")
+                        correct_answer = question["correct_answer"]
 
-                if question["quiz_type"] in ("객관식", "OX"):
-                    select_answer = st.radio(
-                        label="답을 선택하세요.",
-                        options=question["answers"],
-                        index=None,
-                        key=f"radio_{idx}",
-                        label_visibility="collapsed",
-                    )
+                        quiz_type = question.get("quiz_type", "객관식")  # Default to 객관식 if not specified
+                        
+                        if quiz_type in ("객관식", "OX 퀴즈", "OX"):
+                            select_answer = st.radio(
+                                label="답을 선택하세요.",
+                                options=question.get("answers", []),
+                                index=None,
+                                key=f"radio_{idx}",
+                                label_visibility="collapsed",
+                            )
 
-                    if select_answer == correct_answer:
-                        st.success("정답입니다.")
-                    elif select_answer:
-                        st.error("오답입니다.")
-                        wrong_questions.append(question["question"])
-                        wrong_subjects.update(question["subjects"])
-                else:
-                    blank_answer = st.text_input(
-                        label="답을 입력하세요.", key=f"text_{idx}"
-                    )
-                    if blank_answer.lower().replace(
-                        " ", ""
-                    ) == correct_answer.lower().replace(" ", ""):
-                        st.success("정답입니다.")
-                    elif blank_answer:
-                        st.error("오답입니다.")
-                        wrong_questions.append(question["question"])
-                        wrong_subjects.update(question["subjects"])
+                            if select_answer == correct_answer:
+                                st.success("정답입니다.")
+                            elif select_answer:
+                                st.error("오답입니다.")
+                                wrong_questions.append(question["question"])
+                                wrong_subjects.update(question.get("subjects", []))
+                        else:
+                            blank_answer = st.text_input(
+                                label="답을 입력하세요.", key=f"text_{idx}"
+                            )
+                            if blank_answer and blank_answer.lower().strip() == correct_answer.lower().strip():
+                                st.success("정답입니다.")
+                            elif blank_answer:
+                                st.error("오답입니다.")
+                                wrong_questions.append(question["question"])
+                                wrong_subjects.update(question.get("subjects", []))
 
-            button = st.form_submit_button("답 제출")
+                    button = st.form_submit_button("답 제출")
 
-        if button:
-            st.session_state["is_answered"] = True
-            st.write(f"퀴즈 출처: {docs if docs else file_name}")
-            file_name = file_path = docs = None
-            if wrong_questions:
-                send_incorrect_quiz_data(wrong_questions, wrong_subjects)
-            st.write("퀴즈 풀이 결과 전송됨")
+                if button:
+                    st.session_state["is_answered"] = True
+                    st.write(f"퀴즈 출처: {docs if docs else file_name}")
+                    if wrong_questions:
+                        send_incorrect_quiz_data(wrong_questions, list(wrong_subjects))
+                    st.write("퀴즈 풀이 결과 전송됨")
+            else:
+                st.error("퀴즈 데이터 형식이 올바르지 않습니다. 다시 시도해 주세요.")
+                st.session_state["quiz_data"] = None
 
 # 정답 확인 및 세션 상태 초기화
 if st.session_state["is_answered"]:
@@ -235,5 +261,7 @@ if st.session_state["is_answered"]:
             st.info(f"정답: {question['correct_answer']}")
             st.info(f"해설: {question.get('explanation', '해설 없음')}")
 
-        st.session_state["quiz_data"] = None
-        st.session_state["is_answered"] = False
+        if st.button("새 퀴즈 생성하기"):
+            st.session_state["quiz_data"] = None
+            st.session_state["is_answered"] = False
+            st.experimental_rerun()
