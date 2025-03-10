@@ -92,6 +92,7 @@ def generate_quiz(
                 json_content = message_content[json_start:json_end]
                 return json.loads(json_content)
             else:
+                st.write(message_content)
                 st.error("응답 형식이 올바르지 않습니다. 다시 시도해 주세요.")
                 return {"questions": []}
             
