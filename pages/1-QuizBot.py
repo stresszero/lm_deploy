@@ -82,6 +82,8 @@ def generate_quiz(
             message_content = messages[0].content[0].text.value
             # Clean up the content
             message_content = message_content.replace("\n", "")
+            print(message_content)
+
             # Check if the content appears to be JSON
             if "{" in message_content and "}" in message_content:
                 # Try to extract just the JSON part
@@ -92,6 +94,7 @@ def generate_quiz(
             else:
                 st.error("응답 형식이 올바르지 않습니다. 다시 시도해 주세요.")
                 return {"questions": []}
+            
         except (IndexError, AttributeError, json.JSONDecodeError) as e:
             st.error(f"퀴즈 데이터 처리 중 오류가 발생했습니다: {str(e)}")
             return {"questions": []}
